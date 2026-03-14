@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>地图</title>
+
+    <link rel="stylesheet" href="leaflet/leaflet.css">
+    <link rel="stylesheet" href="leaflet-draw/leaflet.draw.css">
+    <link rel="stylesheet" href="leaflet-markercluster/MarkerCluster.css">
+    <link rel="stylesheet" href="leaflet-markercluster/MarkerCluster.Default.css">
+
+    <script src="leaflet/leaflet.js"></script>
+    <script src="leaflet-draw/Leaflet.draw.js"></script>
+    <script src="leaflet-draw/leaflet.polylineDecorator.js"></script>
+    <script src="leaflet-markercluster/leaflet.markercluster.js"></script>
+    <script src="utils/qwebchannel.js"></script>
+
+    <style>
+        html, body, #map {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        .route_marker {
+            background-color: #2ecc71;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            color: white;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.4);
+        }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+    var map = L.map('map').setView([30.246566, 120.209903], 18);
+    var tiles = L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+        subdomains: [1, 2, 3, 4],
+        // maxZoom: 18,
+        minZoom: 10,
+        attribution: '高德',
+        crossOrigin: true
+    }).addTo(map);
+
+    L.control.scale({
+        position: 'bottomleft',
+        metric: true,
+        imperial: false
+    }).addTo(map);
+
+    // bridge
+    let bridge = null;
+    new QWebChannel(qt.webChannelTransport, function (channel) {
+        bridge = channel.objects.bridge;
+    });
+    map.on('zoomend dragend', function () {
+        if (bridge && bridge.onZoomChanged) {
+            var size = getRealMapSize();
+            bridge.onZoomChanged(size);
+        }
+    });
+    map.on('contextmenu', function (e) {
+        showLeafletMenu(e.containerPoint, e.latlng);
+    });
+    map.on('click', function (e) {
+        closeLeafletMenu();
+    });
+
+    // marker 相关
+    var markerLayer = L.markerClusterGroup().addTo(map);
+    const markers = new Map();
+    const highlightMarkerMap = new Map();
+
+    // 路径相关
+    var routeLayer = L.layerGroup().addTo(map);
+    const routes = new Map();
+    let highlightRoute = null;
+    // 途径点
+    var routeMarkerLayer = L.layerGroup().addTo(map);
+    const routeMarkers = new Map();
+
+    // 默认marker样式
+    const defaultIcon = L.icon({
+        iconUrl: 'leaflet/images/marker-icon.png',
+        iconRetinaUrl: 'leaflet/images/marker-icon-2x.png',
+        shadowUrl: 'leaflet/images/marker-shadow.png',
+        iconSize: [18, 25],
+        iconAnchor: [9, 25],
+        popupAnchor: [1, -25],
+        tooltipAnchor: [0, -25],
+        shadowSize: [25, 25]
+    });
+    // 选中状态marker样式
+    const highlightIcon = L.icon({
+        iconUrl: 'leaflet/images/marker-icon-gold.png',
+        iconRetinaUrl: 'leaflet/images/marker-icon-2x-gold.png',
+        iconSize: [18, 25],
+        iconAnchor: [9, 25],
+        popupAnchor: [1, -25],
+        tooltipAnchor: [0, -25],
+        shadowSize: [25, 25]
+    });
+
+    // 路径样式
+    const baseLineColor = '#73D3A2';
+    const selectBaseLineColor = '#2b2b2b';
+    const mainLineColor = '#c8e6c9';
+    const selectMainLineColor = '#00c853';
+    const arrowSvg = `
+            <svg width="10" height="6" viewBox="0 0 10 6">
+                <polyline
+                    points="0,6 5,0 10,6"
+                    fill="none"
+                    stroke="white"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round" />
+            </svg>
+        `;
+
+    // 批量添加marker
+    function addMarkers(markerList) {
+        // markerList = [{id: 0, lng: 0, lat: 0, content: ""}]
+        markerList.forEach(function (m) {
+            if (!markers.has(m.id)) {
+                let icon;
+                if (highlightMarkerMap.has(m.id)) {
+                    icon = highlightIcon;
+                } else {
+                    icon = defaultIcon;
+                }
+                let marker = L.marker([m.lat, m.lng], {icon: icon}).bindPopup(m.content);
+                marker._id = m.id;
+                markers.set(m.id, marker);
+                markerLayer.addLayer(marker);
+            }
+        });
+    }
+
+    // 清空marker
+    function clearMarkers() {
+        markerLayer.clearLayers();
+        markers.clear();
+    }
+
+    // 批量删除marker
+    function removeMarkers(ids) {
+        ids.forEach(id => {
+            let marker = markers.get(id)
+            if (!marker) return
+            markerLayer.removeLayer(marker);
+            markers.delete(id);
+        });
+    }
+
+    // 获取当前地图尺寸
+    function getRealMapSize() {
+        var rsp = {};
+
+        rsp['zoom'] = map.getZoom();
+
+        var center = map.getCenter();
+        rsp['center'] = {'lng': center.lng, 'lat': center.lat};
+
+        var bounds = map.getBounds();
+        var sw = bounds.getSouthWest();
+        var ne = bounds.getNorthEast();
+        var width = sw.distanceTo(L.latLng(sw.lat, ne.lng));
+        var height = sw.distanceTo(L.latLng(ne.lat, sw.lng));
+        rsp['size'] = {'width': width, 'height': height};
+        rsp['border'] = {'lng': {'min': sw.lng, 'max': ne.lng}, 'lat': {'min': sw.lat, 'max': ne.lat}};
+
+        return rsp;
+    }
+
+    // 选中marker(高亮)
+    function highlightMarkers(ids) {
+        ids.forEach(id => {
+            if (highlightMarkerMap.has(id)) return
+            let marker = markers.get(id);
+            if (marker) {
+                marker.setIcon(highlightIcon);
+                marker.setZIndexOffset(1000);
+                highlightMarkerMap.set(id, null);
+            }
+        });
+    }
+
+    // 取消选中marker(取消高亮)
+    function unhighlightMarkers(ids) {
+        ids.forEach(id => {
+            if (!highlightMarkerMap.has(id)) return
+            highlightMarkerMap.delete(id);
+            let marker = markers.get(id);
+            if (marker) {
+                marker.setIcon(defaultIcon);
+                marker.setZIndexOffset(0);
+            }
+        });
+    }
+
+    // 全部取消高亮
+    function unhighlightAllMarkers() {
+        const ids = Array.from(highlightMarkerMap.keys());
+        unhighlightMarkers(ids);
+    }
+
+    // 绘制路径
+    function drawRoute(lines) {
+        // lines = [{'id': 0, 'polyline': [[0, 0]], 'steps': [{'road_name': '', 'step_distance': '', 'instruction': ''}]}]
+        // polyline: [[纬度, 经度]]
+        lines.forEach(item => {
+            if (routes.has(item.id)) {
+                removeRoute(item.id);
+            }
+
+            const baseLine = L.polyline(item.polyline, {
+                color: baseLineColor,
+                weight: 8,
+                opacity: 0.6,
+                lineJoin: "round",
+                lineCap: "round"
+            }).addTo(routeLayer);
+            const mainLine = L.polyline(item.polyline, {
+                color: mainLineColor,
+                weight: 6,
+                opacity: 1,
+                lineJoin: "round",
+                lineCap: "round"
+            }).addTo(routeLayer);
+            mainLine.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                closeLeafletMenu();
+                selectRoute(item.id);
+            });
+            const decorator = L.polylineDecorator(mainLine, {
+                patterns: [
+                    {
+                        offset: 20,
+                        repeat: 30,
+                        symbol: L.Symbol.marker({
+                            rotate: true,
+                            markerOptions: {
+                                icon: L.divIcon({
+                                    className: 'route-arrow',
+                                    html: arrowSvg,
+                                    iconSize: [10, 6],
+                                    iconAnchor: [5, 3]
+                                })
+                            }
+                        })
+                    }
+                ]
+            });
+            const step = item.steps;
+
+            routes.set(item.id, {baseLine, mainLine, decorator, step});
+        });
+
+        if (routes.size === 0) return
+
+        let bounds = L.latLngBounds();
+        routes.forEach(item => {
+            bounds.extend(item.mainLine.getBounds());
+        });
+        map.fitBounds(bounds, {
+            padding: [50, 50],
+            maxZoom: 16
+        })
+    }
+
+    // 删除路径
+    function removeRoute(id) {
+        const route = routes.get(id);
+        if (!route) return
+        routeLayer.removeLayer(route.baseLine);
+        routeLayer.removeLayer(route.mainLine);
+        routeLayer.removeLayer(route.decorator);
+        routes.delete(id);
+    }
+
+    // 删除全部路径
+    function removeAllRoutes() {
+        routeLayer.clearLayers();
+        // routes.forEach(route => {
+        //     map.removeLayer(route.baseLine);
+        //     map.removeLayer(route.mainLine);
+        //     map.removeLayer(route.decorator);
+        // });
+        routes.clear();
+    }
+
+    // 选中路径(高亮)
+    function selectRoute(id) {
+        if (!routes.has(id)) return;
+        if (highlightRoute === id) return;
+        let route = routes.get(id);
+        if (route) {
+            route.baseLine.setStyle({color: selectBaseLineColor});
+            route.mainLine.setStyle({color: selectMainLineColor});
+            route.mainLine.bringToFront();
+            route.decorator.addTo(routeLayer);
+        }
+        if (highlightRoute) {
+            let old = routes.get(highlightRoute);
+            if (old) {
+                old.baseLine.setStyle({color: baseLineColor});
+                old.mainLine.setStyle({color: mainLineColor});
+                if (routeLayer.hasLayer(old.decorator)) {
+                    routeLayer.removeLayer(old.decorator);
+                }
+            }
+        }
+        highlightRoute = id;
+        if (bridge && bridge.onRouteSteps) {
+            bridge.onRouteSteps(route.step);
+        }
+    }
+
+    // 自定义右键菜单
+    function showLeafletMenu(point, latlng) {
+        var menu = document.getElementById('leaflet_custom_menu');
+        if (!menu) {
+            menu = document.createElement('div');
+            menu.id = 'leaflet_custom_menu';
+            menu.style.position = 'absolute';
+            menu.style.background = '#fff';
+            menu.style.border = '1px solid #ccc';
+            menu.style.padding = '5px';
+            menu.style.zIndex = 1000;
+            document.body.appendChild(menu);
+            // 禁止菜单栏默认右键菜单
+            L.DomEvent.on(menu, "contextmenu", L.DomEvent.preventDefault);
+        }
+        // 清空菜单栏，重新渲染
+        menu.innerHTML = '';
+
+        let coords = latlng;
+        const addRouteMarkBtn = document.createElement('div');
+        addRouteMarkBtn.innerText = '添加途径点';
+        addRouteMarkBtn.style.cursor = 'pointer';
+        addRouteMarkBtn.onclick = function () {
+            addRouteMarker(coords.lat, coords.lng);
+            closeLeafletMenu();
+        };
+
+        menu.appendChild(addRouteMarkBtn);
+
+        menu.style.left = point.x + 'px';
+        menu.style.top = point.y + 'px';
+        menu.style.display = 'block';
+    }
+
+    // 关闭右键菜单栏
+    function closeLeafletMenu() {
+        var menu = document.getElementById('leaflet_custom_menu');
+        if (menu) menu.style.display = 'none';
+    }
+
+    // 添加路径途径点
+    function addRouteMarker(lat, lng) {
+        if (routeMarkers.size >= 16) {
+            if (bridge && bridge.onError) {
+                bridge.onError('最多只允许添加 16 个途径点')
+            }
+            return;
+        }
+
+        let index = 1;
+        routeMarkers.forEach(item => {
+            if (item.id >= index) {
+                index = item.id + 1;
+            }
+        });
+        let seq = routeMarkers.size + 1;
+        var marker = L.marker([lat, lng], {
+            icon: L.divIcon({
+                className: 'route_marker',
+                html: `<span>${seq}</span>`,
+                iconSize: [18, 18],
+                iconAnchor: [15, 15]
+            })
+        }).bindPopup('<button id="deleteBtn">删除</button>');
+        marker.id = index;
+        marker.seq = seq;
+        marker.addTo(routeMarkerLayer);
+        routeMarkers.set(index, marker);
+
+        marker.on('click', function (e) {
+            setTimeout(() => {
+                document.getElementById('deleteBtn').onclick = function () {
+                    removeRouteMarker(marker.id);
+                }
+            });
+        });
+
+        if (bridge && bridge.onRouteMarkerEvent) {
+            bridge.onRouteMarkerEvent({'op': 1, 'id': marker.id, 'lng': lng, 'lat': lat});
+        }
+    }
+
+    // 删除途径点
+    function removeRouteMarker(id) {
+        const marker = routeMarkers.get(id);
+        if (!marker) return;
+        routeMarkers.delete(id);
+        routeMarkerLayer.removeLayer(marker);
+        routeMarkerLayer.closePopup();
+
+        routeMarkers.forEach((v, k) => {
+            if (v.seq > marker.seq) {
+                let el = v.getElement();
+                el.innerHTML = `<span>${v.seq - 1}</span>`;
+                v.seq = v.seq - 1;
+            }
+        });
+
+        if (bridge && bridge.onRouteMarkerEvent) {
+            bridge.onRouteMarkerEvent({'op': 2, 'id': id});
+        }
+    }
+
+    // 获取所有途径点
+    function getRouteMarkers() {
+        let markers = [];
+        for (let i = 0; i < routeMarkers.size; i++) {
+            const marker = routeMarkers.get(i + 1);
+            if (marker) {
+                markers.push({'id': marker.id, 'seq': marker.seq, 'lng': marker.latlng.lng, 'lat': marker.latlng.lat});
+            }
+        }
+        if (bridge && bridge.onRouteMarkers) {
+            bridge.onRouteMarkers(markers);
+        }
+    }
+</script>
+</body>
+</html>
