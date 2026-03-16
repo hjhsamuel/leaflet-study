@@ -100,3 +100,28 @@ class DrivingRsp(BaseModel):
     infocode: str  # 返回状态说明,10000代表正确
     count: str  # 路径规划方案总数
     route: Optional[DrivingRoute]  # 规划方案列表
+
+
+class POIInfo(BaseModel):
+    name: str  # 名称
+    id: str  # 唯一标识
+    parent: Optional[str]  # POI 的 ID，当前 POI 如果有父 POI，则返回父 POI 的 ID。可能为空
+    distance: Optional[str]  # 离中心点距离，单位米；仅在周边搜索的时候有值返回
+    location: str  # 经纬度
+    type: str  # 所属类型
+    typecode: str  # 分类编码
+    pname: str  # 所属省份
+    cityname: str  # 所属城市
+    adname: str  # 所属区县
+    address: str  # 详细地址
+    pcode: str  # 所属省份编码
+    adcode: str  # 所属区域编码
+    citycode: str  # 所属城市编码
+
+
+class POIRsp(BaseModel):
+    status: str
+    info: str
+    infocode: str
+    count: str
+    pois: List[POIInfo] = None

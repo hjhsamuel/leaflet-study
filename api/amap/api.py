@@ -74,15 +74,36 @@ class AMap:
 
         rsp = requests.post(path, params, timeout=5, proxies=proxy, verify=False)
         try:
-            out = rsp.json()
-            print(out)
-            info = schema.DrivingRsp(**out)
+            info = schema.DrivingRsp(**rsp.json())
             if info.status != "1" or info.infocode != "10000":
                 return 0, None, Exception(info.info)
             cnt = int(info.count)
         except Exception as e:
             return 0, None, e
         return cnt, info.route, None
+
+    def poi(self, key: str) -> Tuple[Optional[schema.POIRsp], Optional[Exception]]:
+        path = urljoin(self._addr, '/v5/place/text')
+        params = {
+            'key': self._cred,
+            'keywords': key
+        }
+
+        # proxy
+        # TODO
+        proxy = {'http': '', 'https': ''}
+
+        rsp = requests.get(path, params, timeout=5, proxies=proxy, verify=False)
+        try:
+            out = rsp.json()
+            info = schema.POIRsp(**out)
+            if info.status != "1" or info.infocode != "10000":
+                return None, Exception(info.info)
+        except Exception as e:
+            return None, e
+        return info, None
+
+
 
 
 
